@@ -1,0 +1,7 @@
+{
+  "uuid": "battery-runtime@moser4035.github.io",
+  "name": "Battery Runtime",
+  "description": "Shows time since last unplugged (on battery) in the top bar.",
+  "shell-version": ["42"],
+  "version": 1
+}

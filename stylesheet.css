@@ -1,0 +1,21 @@
+.battery-runtime-label {
+    padding: 6px 6px 0 6px;
+}
+
+.battery-runtime-popup-label {
+    padding: 4px 10px;
+    color: #ccc;
+    font-weight: 500;
+}
+
+.battery-runtime-popup-header {
+    padding: 4px 10px 0;
+    color: #ccc;
+    font-weight: 800;
+}
+
+.battery-runtime-separator {
+    background-color: rgba(255, 255, 255, 0.2);
+    margin: 6px 10px;
+    height: 1px;
+}
