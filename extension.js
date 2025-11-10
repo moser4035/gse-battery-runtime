@@ -80,7 +80,9 @@ var BatteryRuntimeIndicator = GObject.registerClass(
       this._display = this._upClient.get_display_device();
 
       const s = readState();
-      this._unplugTimestamp = s.unplugTimestamp || null;
+      this._unplugMonotonic = s.unplugMonotonic || null; // monotonic time when unplugged
+      this._accumulatedRuntime = s.accumulatedRuntime || 0; // total runtime in seconds
+      this._lastUpdateMonotonic = s.lastUpdateMonotonic || null;
       this._lastPercent = s.batteryPercent || null;
       this._startPercent = s.startPercent || null;
 
@@ -96,7 +98,7 @@ var BatteryRuntimeIndicator = GObject.registerClass(
         GLib.PRIORITY_DEFAULT,
         60,
         () => {
-          this._update();
+          this._tick();
           return GLib.SOURCE_CONTINUE;
         },
       );
@@ -155,54 +157,56 @@ var BatteryRuntimeIndicator = GObject.registerClass(
       const currentPercent = this._display.percentage;
       const lastPercent = this._lastPercent;
 
-      const now = Math.floor(GLib.get_real_time() / 1_000_000);
-      const bootTime = now - Math.floor(GLib.get_monotonic_time() / 1_000_000);
+      const nowMono = Math.floor(GLib.get_monotonic_time() / 1_000_000);
 
-      // Keep unplug timestamp across reboots unless charged while off
-      if (this._unplugTimestamp && this._unplugTimestamp < bootTime) {
-        const chargedWhileOff =
-          lastPercent !== null && currentPercent > lastPercent + 1;
-        if (chargedWhileOff) {
-          this._unplugTimestamp = null;
-          this._startPercent = null;
-        }
-      }
-
-      // Reset if battery charged significantly while running
-      if (lastPercent !== null && currentPercent > lastPercent + 3) {
-        this._unplugTimestamp = null;
-        this._startPercent = null;
-        this._lastPercent = currentPercent;
-        writeState({
-          unplugTimestamp: null,
-          batteryPercent: currentPercent,
-          startPercent: null,
-        });
-        this._update();
-        return;
-      }
-
-      // Reset if currently plugged in
-      if (!onBattery && this._unplugTimestamp) {
-        this._unplugTimestamp = null;
+      // Reset if plugged in or charged significantly
+      if (
+        !onBattery ||
+        (lastPercent !== null && currentPercent > lastPercent + 3)
+      ) {
+        this._unplugMonotonic = null;
+        this._accumulatedRuntime = 0;
         this._startPercent = null;
       }
 
-      // Set timestamp and starting percent when switching to battery
-      if (onBattery && !this._unplugTimestamp) {
-        this._unplugTimestamp = now;
+      // Start new unplug tracking if unplugged
+      if (onBattery && !this._unplugMonotonic) {
+        this._unplugMonotonic = nowMono;
+        this._lastUpdateMonotonic = nowMono;
+        this._accumulatedRuntime = 0;
         this._startPercent = Math.round(currentPercent);
       }
 
-      // Backfill start percent if missing
-      if (onBattery && this._unplugTimestamp && this._startPercent == null) {
-        this._startPercent = Math.round(currentPercent);
-      }
-
+      // update last percent
       this._lastPercent = currentPercent;
+
       writeState({
-        unplugTimestamp: this._unplugTimestamp,
+        unplugMonotonic: this._unplugMonotonic,
+        accumulatedRuntime: this._accumulatedRuntime,
+        lastUpdateMonotonic: this._lastUpdateMonotonic,
         batteryPercent: currentPercent,
+        startPercent: this._startPercent,
+      });
+
+      this._update();
+    }
+
+    _tick() {
+      const onBattery = this._isOnBattery();
+      if (!onBattery || !this._unplugMonotonic) return;
+
+      const nowMono = Math.floor(GLib.get_monotonic_time() / 1_000_000);
+      if (this._lastUpdateMonotonic) {
+        const delta = nowMono - this._lastUpdateMonotonic;
+        if (delta > 0) this._accumulatedRuntime += delta;
+      }
+      this._lastUpdateMonotonic = nowMono;
+
+      writeState({
+        unplugMonotonic: this._unplugMonotonic,
+        accumulatedRuntime: this._accumulatedRuntime,
+        lastUpdateMonotonic: this._lastUpdateMonotonic,
+        batteryPercent: this._lastPercent,
         startPercent: this._startPercent,
       });
 
@@ -214,11 +218,7 @@ var BatteryRuntimeIndicator = GObject.registerClass(
       const timeToEmpty = this._display.time_to_empty;
 
       if (onBattery) {
-        let since = "–";
-        if (this._unplugTimestamp) {
-          const now = Math.floor(GLib.get_real_time() / 1_000_000);
-          since = formatDuration(now - this._unplugTimestamp);
-        }
+        const since = formatDuration(this._accumulatedRuntime);
 
         this._icon.set_icon_name(OnBatteryIconName);
         this._label.set_text(since);
