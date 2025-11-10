@@ -12,12 +12,8 @@ It adds a small label to your top bar that updates automatically and displays:
 
 ## 📸 Screenshots
 
-*(Add your screenshots here once you take them!)*
-Example:
+<img width="426" height="180" alt="Screenshot from 2025-11-10 21-35-10" src="https://github.com/user-attachments/assets/bc162383-eeb8-4c36-a582-f3e5ce6e0468" />
 
-```
-Top Bar: [🕒 1h 23m]
-```
 
 ---
 
