@@ -74,7 +74,6 @@ var BatteryRuntimeIndicator = GObject.registerClass(
       box.add_child(this._label);
       this.add_child(box);
 
-      // Replace interactive menu items with non-reactive labels
       this._buildReadOnlyPopup();
 
       this._upClient = new UPowerGlib.Client();
@@ -159,11 +158,17 @@ var BatteryRuntimeIndicator = GObject.registerClass(
       const now = Math.floor(GLib.get_real_time() / 1_000_000);
       const bootTime = now - Math.floor(GLib.get_monotonic_time() / 1_000_000);
 
+      // Keep unplug timestamp across reboots unless charged while off
       if (this._unplugTimestamp && this._unplugTimestamp < bootTime) {
-        this._unplugTimestamp = null;
-        this._startPercent = null;
+        const chargedWhileOff =
+          lastPercent !== null && currentPercent > lastPercent + 1;
+        if (chargedWhileOff) {
+          this._unplugTimestamp = null;
+          this._startPercent = null;
+        }
       }
 
+      // Reset if battery charged significantly while running
       if (lastPercent !== null && currentPercent > lastPercent + 3) {
         this._unplugTimestamp = null;
         this._startPercent = null;
@@ -177,16 +182,19 @@ var BatteryRuntimeIndicator = GObject.registerClass(
         return;
       }
 
+      // Reset if currently plugged in
       if (!onBattery && this._unplugTimestamp) {
         this._unplugTimestamp = null;
         this._startPercent = null;
       }
 
+      // Set timestamp and starting percent when switching to battery
       if (onBattery && !this._unplugTimestamp) {
         this._unplugTimestamp = now;
         this._startPercent = Math.round(currentPercent);
       }
 
+      // Backfill start percent if missing
       if (onBattery && this._unplugTimestamp && this._startPercent == null) {
         this._startPercent = Math.round(currentPercent);
       }
@@ -240,10 +248,12 @@ var BatteryRuntimeIndicator = GObject.registerClass(
 let indicator;
 
 function init() {}
+
 function enable() {
   indicator = new BatteryRuntimeIndicator();
   Main.panel.addToStatusArea("battery-runtime", indicator);
 }
+
 function disable() {
   if (indicator) indicator.destroy();
   indicator = null;
