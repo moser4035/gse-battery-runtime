@@ -4,7 +4,8 @@ A simple GNOME Shell extension that shows **how long your system has been runnin
 
 It adds a small label to your top bar that updates automatically and displays:
 
-* Time since last unplugged (e.g., `1h 23m`)
+* Active time since last unplugged, excluding suspend (e.g., `1h 23m`)
+* Time spent suspended
 * Starting battery percentage
 * Estimated remaining runtime
 
@@ -25,7 +26,7 @@ It adds a small label to your top bar that updates automatically and displays:
   * Duration on battery
   * Start percentage
   * Estimated remaining time
-* Lightweight — updates every minute
+* Lightweight — redraws once a minute, no background accounting
 * Uses native GNOME UI components for a clean look
 
 ---
@@ -39,11 +40,11 @@ It adds a small label to your top bar that updates automatically and displays:
    ```bash
    git clone https://github.com/moser4035/gse-battery-runtime.git
    ```
-2. Copy the extension folder to your GNOME extensions directory:
+2. Link the repository into your GNOME extensions directory:
 
    ```bash
    mkdir -p ~/.local/share/gnome-shell/extensions/
-   cp -r gse-battery-runtime/battery-runtime@moser4035.github.io ~/.local/share/gnome-shell/extensions/
+   ln -s "$PWD/gse-battery-runtime" ~/.local/share/gnome-shell/extensions/battery-runtime@moser4035.github.io
    ```
 3. Restart GNOME Shell:
 
@@ -61,22 +62,28 @@ It adds a small label to your top bar that updates automatically and displays:
 
 | GNOME Shell | Status      |
 | ----------- | ----------- |
-| 42          | ✅ Supported |
-| 45          | 🟡 Planned |
-| 46          | 🟡 Planned |
+| 45 – 50     | ✅ Supported |
+| 42 – 44     | ❌ Use release 1 |
 
 ---
 
 ## 🧠 How It Works
 
-The extension uses the **UPower** system API to track when the system switches between AC and battery power.
-When unplugged, it records the timestamp and battery level, then calculates how long the system has been running since that moment.
+The extension watches the **UPower** display device over D-Bus. When the laptop goes onto battery it stores the unplug time (wall clock), the battery level and the machine's suspend time at that moment. Nothing has to tick in the background, and the values stay correct across lock and logout.
 
-It stores this state in:
+* **Active** (shown in the top bar) is the time since unplug minus the time spent suspended.
+* **Suspended** is the time the machine slept since unplug. It is the difference between the kernel's boot clock (which counts suspend) and monotonic clock (which does not), so it is correct even when the extension was disabled during the suspend, e.g. while the screen was locked.
+* A **reboot** starts a new session: the suspend baseline of the previous boot is unknown, so tracking restarts if the laptop is still on battery.
+
+The record is cleared as soon as the laptop is charging or fully charged.
+
+The state is stored in:
 
 ```
 ~/.cache/battery-runtime/state.json
 ```
+
+The extension only reads power state. It does not inhibit idle, suspend or logout, and it is disabled while the screen is locked.
 
 ---
 

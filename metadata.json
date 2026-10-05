@@ -1,7 +1,8 @@
 {
   "uuid": "battery-runtime@moser4035.github.io",
   "name": "Battery Runtime",
-  "description": "Shows time since last unplugged (on battery) in the top bar.",
-  "shell-version": ["42"],
-  "version": 1
+  "description": "Shows how long the laptop has been running on battery in the top bar.",
+  "shell-version": ["45", "46", "47", "48", "49", "50"],
+  "url": "https://github.com/moser4035/gse-battery-runtime",
+  "version": 2
 }

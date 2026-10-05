@@ -1,27 +1,25 @@
-"use strict";
+import { Extension } from "resource:///org/gnome/shell/extensions/extension.js";
+import * as Main from "resource:///org/gnome/shell/ui/main.js";
 
-const Me = imports.misc.extensionUtils.getCurrentExtension();
-const Main = imports.ui.main;
-const { BatteryRuntimeIndicator } = Me.imports.indicator;
-const { Log } = Me.imports.log;
+import { BatteryRuntimeIndicator } from "./indicator.js";
+import { PowerTracker } from "./powerTracker.js";
+import { StateStore } from "./stateStore.js";
 
-let indicator;
-
-function init() {
-  Log.init();
-  Log.write("init()");
-}
-
-function enable() {
-  indicator = new BatteryRuntimeIndicator();
-  Main.panel.addToStatusArea("battery-runtime", indicator);
-}
-
-function disable() {
-  Log.write("disable()");
-  if (indicator) {
-    indicator.destroy();
-    indicator = null;
+export default class BatteryRuntimeExtension extends Extension {
+  enable() {
+    this._tracker = new PowerTracker(new StateStore(), () =>
+      this._indicator?.refresh(),
+    );
+    this._indicator = new BatteryRuntimeIndicator(this.path, () =>
+      this._tracker.getSnapshot(),
+    );
+    Main.panel.addToStatusArea(this.uuid, this._indicator);
   }
-  Log.close();
+
+  disable() {
+    this._tracker?.destroy();
+    this._tracker = null;
+    this._indicator?.destroy();
+    this._indicator = null;
+  }
 }

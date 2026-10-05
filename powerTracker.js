@@ -1,135 +1,133 @@
-"use strict";
+import Gio from "gi://Gio";
+import GLib from "gi://GLib";
 
-const { Gio, GLib, UPowerGlib } = imports.gi;
-const Me = imports.misc.extensionUtils.getCurrentExtension();
-const { Utils } = Me.imports.utils;
-const { Log } = Me.imports.log;
+import { readBootId, readSuspendedSeconds } from "./bootClock.js";
+import { computeDurations } from "./durations.js";
 
-var PowerTracker = class {
-  constructor(onChange) {
-    this._onChange = typeof onChange === "function" ? onChange : null;
+// org.freedesktop.UPower.Device "State" values.
+const State = {
+  CHARGING: 1,
+  DISCHARGING: 2,
+  EMPTY: 3,
+  FULLY_CHARGED: 4,
+  PENDING_CHARGE: 5,
+};
+const ON_BATTERY_STATES = [State.DISCHARGING, State.EMPTY];
+const ON_AC_STATES = [State.CHARGING, State.FULLY_CHARGED, State.PENDING_CHARGE];
 
-    this._upClient = new UPowerGlib.Client();
-    this._display = this._upClient.get_display_device();
+const UPOWER_NAME = "org.freedesktop.UPower";
+const DISPLAY_DEVICE_PATH = "/org/freedesktop/UPower/devices/DisplayDevice";
+const DEVICE_INTERFACE = "org.freedesktop.UPower.Device";
 
-    const s = Utils.readState();
-    this._unplugMonotonic = s.unplugMonotonic || null;
-    this._accumulatedRuntime = s.accumulatedRuntime || 0;
-    this._lastUpdateMonotonic = s.lastUpdateMonotonic || null;
-    this._lastPercent = s.batteryPercent || null;
-    this._startPercent = s.startPercent || null;
+/**
+ * Tracks when the laptop was unplugged.
+ *
+ * The only state is the wall-clock time of the unplug, so the elapsed time is
+ * always `now - unplugTime`. Nothing has to tick, and the value stays correct
+ * across lock, logout, suspend and reboot. States that are neither clearly
+ * "on battery" nor clearly "on AC" (e.g. pending-discharge) keep the record.
+ */
+export class PowerTracker {
+  /**
+   * @param {import('./stateStore.js').StateStore} store
+   * @param {() => void} onChange called whenever the displayed data changes
+   */
+  constructor(store, onChange) {
+    this._store = store;
+    this._onChange = onChange;
+    this._bootId = readBootId();
+    this._record = this._loadRecord();
+    this._cancellable = new Gio.Cancellable();
+    this._proxy = null;
+    this._proxySignalId = 0;
 
-    this._signals = [];
-    this._connect(this._display, "notify::state", () => this._onPowerChange());
-    this._connect(this._display, "notify::time-to-empty", () =>
-      this._safeChange(),
+    Gio.DBusProxy.new_for_bus(
+      Gio.BusType.SYSTEM,
+      Gio.DBusProxyFlags.NONE,
+      null,
+      UPOWER_NAME,
+      DISPLAY_DEVICE_PATH,
+      DEVICE_INTERFACE,
+      this._cancellable,
+      (_source, result) => this._onProxyReady(result),
     );
-
-    this._timeoutId = GLib.timeout_add_seconds(
-      GLib.PRIORITY_DEFAULT,
-      60,
-      () => {
-        this._tick();
-        return GLib.SOURCE_CONTINUE;
-      },
-    );
-
-    this._onPowerChange();
   }
 
-  _safeChange() {
-    if (this._onChange) {
-      try {
-        this._onChange();
-      } catch (e) {
-        Log.write("onChange error: " + e);
-      }
-    }
-  }
-
-  _connect(obj, sig, cb) {
-    this._signals.push([obj, obj.connect(sig, cb)]);
-  }
-
-  _isOnBattery() {
-    return this._display.state === UPowerGlib.DeviceState.DISCHARGING;
-  }
-
-  _onPowerChange() {
-    const onBattery = this._isOnBattery();
-    const currentPercent = this._display.percentage;
-    const lastPercent = this._lastPercent;
-    const nowMono = Math.floor(GLib.get_monotonic_time() / 1_000_000);
-
-    // Reset if plugged in OR charged significantly while running
-    if (
-      !onBattery ||
-      (lastPercent !== null && currentPercent > lastPercent + 3)
-    ) {
-      this._unplugMonotonic = null;
-      this._accumulatedRuntime = 0;
-      this._startPercent = null;
-      this._lastUpdateMonotonic = null;
-    }
-
-    // Start tracking when first detected on battery
-    if (onBattery && !this._unplugMonotonic) {
-      this._unplugMonotonic = nowMono;
-      this._lastUpdateMonotonic = nowMono;
-      this._accumulatedRuntime = 0;
-      this._startPercent = Math.round(currentPercent);
-    }
-
-    this._lastPercent = currentPercent;
-    this._persist();
-    this._safeChange();
-  }
-
-  _tick() {
-    const onBattery = this._isOnBattery();
-    if (!onBattery || !this._unplugMonotonic) return;
-
-    const nowMono = Math.floor(GLib.get_monotonic_time() / 1_000_000);
-    if (this._lastUpdateMonotonic) {
-      const delta = nowMono - this._lastUpdateMonotonic;
-      if (delta > 0) this._accumulatedRuntime += delta;
-    }
-    this._lastUpdateMonotonic = nowMono;
-
-    this._persist();
-    this._safeChange();
-  }
-
-  _persist() {
-    Utils.writeState({
-      unplugMonotonic: this._unplugMonotonic,
-      accumulatedRuntime: this._accumulatedRuntime,
-      lastUpdateMonotonic: this._lastUpdateMonotonic,
-      batteryPercent: this._lastPercent,
-      startPercent: this._startPercent,
-    });
-  }
-
-  getTimes() {
-    const onBattery = this._isOnBattery();
-    const timeToEmpty = this._display.time_to_empty;
-    const hasUnplug = !!this._unplugMonotonic;
-    const active = this._accumulatedRuntime;
-    const total = active;
+  /**
+   * @returns {{onBattery: boolean, unplugTime: number|null, active: number,
+   *   suspended: number, startPercent: number|null, timeToEmpty: number}}
+   */
+  getSnapshot() {
+    const record = this._record;
+    const durations = record
+      ? computeDurations(
+          record,
+          Math.floor(GLib.get_real_time() / 1_000_000),
+          readSuspendedSeconds(),
+        )
+      : { active: 0, suspended: 0 };
     return {
-      onBattery,
-      hasUnplug,
-      active,
-      total,
-      startPercent: this._startPercent,
-      timeToEmpty,
+      onBattery: record !== null,
+      unplugTime: record?.unplugTime ?? null,
+      active: durations.active,
+      suspended: durations.suspended,
+      startPercent: record?.startPercent ?? null,
+      timeToEmpty: this._property("TimeToEmpty") ?? 0,
     };
   }
 
   destroy() {
-    if (this._timeoutId) GLib.source_remove(this._timeoutId);
-    this._signals.forEach(([o, id]) => o.disconnect(id));
-    this._signals = [];
-    Log.write("PowerTracker destroyed");
+    this._cancellable.cancel();
+    if (this._proxy && this._proxySignalId)
+      this._proxy.disconnect(this._proxySignalId);
+    this._proxy = null;
+    this._proxySignalId = 0;
   }
-};
+
+  /**
+   * Loads the persisted record. A record from another boot is dropped because
+   * its suspend-time baseline cannot be compared with this boot's clocks.
+   */
+  _loadRecord() {
+    const record = this._store.load();
+    return record?.bootId === this._bootId ? record : null;
+  }
+
+  _onProxyReady(result) {
+    try {
+      this._proxy = Gio.DBusProxy.new_for_bus_finish(result);
+    } catch (e) {
+      if (!e.matches(Gio.IOErrorEnum, Gio.IOErrorEnum.CANCELLED))
+        console.error(`battery-runtime: cannot reach UPower: ${e.message}`);
+      return;
+    }
+    this._proxySignalId = this._proxy.connect("g-properties-changed", () =>
+      this._reconcile(),
+    );
+    this._reconcile();
+  }
+
+  _property(name) {
+    return this._proxy?.get_cached_property(name)?.deepUnpack() ?? null;
+  }
+
+  /** Brings the stored record in line with the current UPower state. */
+  _reconcile() {
+    const state = this._property("State");
+    const previous = this._record;
+
+    if (ON_BATTERY_STATES.includes(state) && !this._record) {
+      this._record = {
+        unplugTime: Math.floor(GLib.get_real_time() / 1_000_000),
+        startPercent: Math.round(this._property("Percentage") ?? 0),
+        bootId: this._bootId,
+        suspendedAtUnplug: readSuspendedSeconds(),
+      };
+    } else if (ON_AC_STATES.includes(state)) {
+      this._record = null;
+    }
+
+    if (this._record !== previous) this._store.save(this._record);
+    this._onChange();
+  }
+}
